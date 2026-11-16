@@ -1,0 +1,12 @@
+{
+  "name": "release-checklist-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end tests for the release checklist app",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}

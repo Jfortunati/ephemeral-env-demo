@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Release Checklist</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="banner" data-testid="env-banner">
+    <span>Environment: <strong data-testid="env-name">…</strong></span>
+    <span>Pull request: <strong data-testid="env-pr">…</strong></span>
+    <span>Commit: <strong data-testid="env-commit">…</strong></span>
+  </div>
+
+  <main>
+    <h1 data-testid="page-title">Release Checklist</h1>
+
+    <form data-testid="add-item-form" class="add-form">
+      <input data-testid="new-item-input" type="text" placeholder="Add a checklist item" aria-label="New checklist item" required>
+      <button data-testid="add-item-button" type="submit">Add</button>
+    </form>
+
+    <ul data-testid="item-list" class="items"></ul>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
