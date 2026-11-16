@@ -16,8 +16,13 @@ spec:
       type: string
       description: Pull request number the app's banner should show (optional)
       default: ""
+    gitRevision:
+      type: string
+      description: Branch or commit of the test code to run, e.g. the pull request's head commit
+      default: main
   use:
     - name: playwright-e2e
       config:
         baseUrl: "{{ config.baseUrl }}"
         expectedPr: "{{ config.expectedPr }}"
+        gitRevision: "{{ config.gitRevision }}"

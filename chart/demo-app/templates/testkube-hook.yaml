@@ -1,6 +1,7 @@
 {{- if .Values.testkubeHook.enabled }}
 # Argo CD PostSync hook: once the app is synced and healthy, start the
 # end-to-end tests in Testkube against this environment and wait for the result.
+# The tests are taken from the same commit as the deployed app.
 # A failed test run makes this Job fail, which shows as a failed sync in Argo CD.
 #
 # The Job runs in a fixed namespace (not the pull request namespace) so it can read
@@ -38,6 +39,7 @@ spec:
               testkube run testworkflow {{ .Values.testkubeHook.workflow }} \
                 --config baseUrl=http://demo-app.{{ .Release.Namespace }}.svc.cluster.local:8080 \
                 --config expectedPr={{ .Values.prNumber }} \
+                --config gitRevision={{ .Values.commitSha | default "main" }} \
                 --tag pr={{ .Values.prNumber }} \
                 --tag sha={{ .Values.commitSha | trunc 7 }} \
                 --target name={{ .Values.testkubeHook.runner }} \
