@@ -1,0 +1,53 @@
+# Shared template: runs the Playwright end-to-end suite against any URL.
+# Used by both demo-app-e2e (Argo CD path) and demo-app-ephemeral (Testkube-provisioned path).
+apiVersion: testworkflows.testkube.io/v1
+kind: TestWorkflowTemplate
+metadata:
+  name: playwright-e2e
+  namespace: testkube
+spec:
+  config:
+    baseUrl:
+      type: string
+      description: URL of the app under test
+    expectedPr:
+      type: string
+      description: Pull request number the app's banner should show (optional)
+      default: ""
+    gitRevision:
+      type: string
+      description: Branch or commit of the test code to check out
+      default: main
+  content:
+    git:
+      uri: https://github.com/Jfortunati/ephemeral-env-demo
+      revision: "{{ config.gitRevision }}"
+      paths:
+        - tests/e2e
+  container:
+    # Must match the @playwright/test version pinned in tests/e2e/package.json.
+    image: mcr.microsoft.com/playwright:v1.65.1-noble
+    workingDir: /data/repo/tests/e2e
+    env:
+      - name: BASE_URL
+        value: "{{ config.baseUrl }}"
+      - name: EXPECTED_PR
+        value: "{{ config.expectedPr }}"
+      - name: CI
+        value: "true"
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+  steps:
+    - name: Install test dependencies
+      shell: npm ci
+    - name: Run Playwright tests
+      shell: npx playwright test
+      artifacts:
+        # Saved even when tests fail, so the report, traces and screenshots are available.
+        # Testkube reads test-results/junit.xml to show individual test cases.
+        condition: always
+        paths:
+          - playwright-report/**/*
+          - test-results/**/*

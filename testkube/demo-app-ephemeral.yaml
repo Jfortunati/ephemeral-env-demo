@@ -1,0 +1,72 @@
+# Testkube provisions the environment, tests it and tears it down, in one workflow:
+#   1. Provision: install the app from the Helm chart into a fresh namespace
+#   2. Test:      run the Playwright suite against it
+#   3. Tear down: uninstall and delete the namespace, whether or not the tests passed
+apiVersion: testworkflows.testkube.io/v1
+kind: TestWorkflow
+metadata:
+  name: demo-app-ephemeral
+  namespace: testkube
+  labels:
+    app: demo-app
+spec:
+  config:
+    imageTag:
+      type: string
+      description: App image tag to deploy (main, pr-<number> or sha-<commit>)
+      default: main
+    gitRevision:
+      type: string
+      description: Branch or commit of the chart and tests to use
+      default: main
+  content:
+    git:
+      uri: https://github.com/Jfortunati/ephemeral-env-demo
+      revision: "{{ config.gitRevision }}"
+      paths:
+        - chart/demo-app
+  pod:
+    # Least-privilege account defined in deploy/testkube/rbac.yaml.
+    serviceAccountName: demo-app-ephemeral
+  container:
+    env:
+      - name: NAMESPACE
+        value: "tk-{{ execution.id }}"
+  steps:
+    - name: Provision environment
+      container:
+        image: alpine/k8s:1.37.2
+        workingDir: /data/repo
+      shell: |
+        CHART_VERSION=$(helm show chart chart/demo-app | awk '/^version:/ {print $2}')
+        echo "Deploying demo-app"
+        echo "  namespace:     $NAMESPACE"
+        echo "  chart version: $CHART_VERSION"
+        echo "  image:         ghcr.io/jfortunati/ephemeral-env-demo:{{ config.imageTag }}"
+        echo "  git revision:  {{ config.gitRevision }}"
+        echo
+        helm upgrade --install demo-app chart/demo-app \
+          --namespace "$NAMESPACE" --create-namespace \
+          --set image.tag={{ config.imageTag }} \
+          --set envName="$NAMESPACE" \
+          --wait --timeout 3m \
+          || { kubectl get pods,events -n "$NAMESPACE"; exit 1; }
+        echo
+        helm list -n "$NAMESPACE"
+        kubectl get deploy,svc,pods -n "$NAMESPACE" -o wide
+
+    - name: Run end-to-end tests
+      template:
+        name: playwright-e2e
+        config:
+          baseUrl: "http://demo-app.tk-{{ execution.id }}.svc.cluster.local:8080"
+          gitRevision: "{{ config.gitRevision }}"
+
+    - name: Tear down environment
+      condition: always
+      container:
+        image: alpine/k8s:1.37.2
+      shell: |
+        helm uninstall demo-app --namespace "$NAMESPACE" --wait --timeout 2m || true
+        kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=2m
+        echo "Removed namespace $NAMESPACE"

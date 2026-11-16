@@ -1,0 +1,23 @@
+# Runs the end-to-end tests against an app that something else has already deployed.
+# Started by the Argo CD post-sync hook for each pull request environment.
+apiVersion: testworkflows.testkube.io/v1
+kind: TestWorkflow
+metadata:
+  name: demo-app-e2e
+  namespace: testkube
+  labels:
+    app: demo-app
+spec:
+  config:
+    baseUrl:
+      type: string
+      description: URL of the app under test, e.g. http://demo-app.pr-42.svc.cluster.local:8080
+    expectedPr:
+      type: string
+      description: Pull request number the app's banner should show (optional)
+      default: ""
+  use:
+    - name: playwright-e2e
+      config:
+        baseUrl: "{{ config.baseUrl }}"
+        expectedPr: "{{ config.expectedPr }}"
