@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test('page loads and shows the checklist title', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByTestId('page-title')).toHaveText('Release Checklist');
+  await expect(page.getByTestId('page-title')).toHaveText('Release Checklist v2');
 });
 
 test('banner shows the expected pull request', async ({ page }) => {
