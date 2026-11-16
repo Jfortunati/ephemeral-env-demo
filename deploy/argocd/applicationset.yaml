@@ -1,0 +1,61 @@
+# One Argo CD Application per open pull request.
+#
+# Argo CD polls GitHub for open pull requests and deploys each one from its head commit
+# into its own namespace, pr-<number>, using the image GitHub Actions built for that commit.
+# After the app is healthy, the chart's post-sync hook starts the Testkube end-to-end tests.
+# When the pull request is closed, the Application is deleted, and the finalizer removes
+# everything it deployed, including the namespace.
+#
+# Field names checked against the Argo CD v3.6 pull request generator docs.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: demo-app-pull-requests
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - pullRequest:
+        github:
+          owner: Jfortunati
+          repo: ephemeral-env-demo
+          tokenRef:
+            secretName: github-token
+            key: token
+        # Check for new pull requests and new commits every 30 seconds.
+        requeueAfterSeconds: 30
+  template:
+    metadata:
+      name: "demo-app-pr-{{ .number }}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/Jfortunati/ephemeral-env-demo.git
+        targetRevision: "{{ .head_sha }}"
+        path: chart/demo-app
+        helm:
+          parameters:
+            - name: image.tag
+              value: "sha-{{ .head_sha }}"
+            - name: prNumber
+              value: "{{ .number }}"
+              forceString: true
+            - name: commitSha
+              value: "{{ .head_sha }}"
+              forceString: true
+            - name: envName
+              value: "pr-{{ .number }}"
+            - name: namespace.create
+              value: "true"
+            - name: testkubeHook.enabled
+              value: "true"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "pr-{{ .number }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

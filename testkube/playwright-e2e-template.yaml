@@ -24,10 +24,12 @@ spec:
       revision: "{{ config.gitRevision }}"
       paths:
         - tests/e2e
+      # Separate checkout path, so workflows that clone the repo themselves can use this template.
+      mountPath: /data/e2e
   container:
     # Must match the @playwright/test version pinned in tests/e2e/package.json.
     image: mcr.microsoft.com/playwright:v1.65.1-noble
-    workingDir: /data/repo/tests/e2e
+    workingDir: /data/e2e/tests/e2e
     env:
       - name: BASE_URL
         value: "{{ config.baseUrl }}"
