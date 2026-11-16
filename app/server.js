@@ -24,7 +24,7 @@ function addItem(title, done = false) {
 }
 addItem('Review release notes', true);
 addItem('Run end-to-end tests');
-addItem('Approve deployment');
+addItem('Approve production deployment');
 
 app.get('/healthz', (req, res) => {
   res.json({ status: 'ok' });
