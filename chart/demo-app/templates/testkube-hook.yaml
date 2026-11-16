@@ -20,6 +20,8 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 0
+  # Safety net: fail the sync if the tests have not finished within 15 minutes.
+  activeDeadlineSeconds: 900
   ttlSecondsAfterFinished: {{ .Values.testkubeHook.ttlSecondsAfterFinished }}
   template:
     spec:
@@ -36,15 +38,32 @@ spec:
               testkube set context \
                 --api-key "$TESTKUBE_API_KEY" \
                 --org-id "$TESTKUBE_ORG_ID" \
-                --env-id "$TESTKUBE_ENV_ID"
-              testkube run testworkflow {{ .Values.testkubeHook.workflow }} \
+                --env-id "$TESTKUBE_ENV_ID" > /dev/null
+
+              EXECUTION_ID=$(testkube run testworkflow {{ .Values.testkubeHook.workflow }} \
                 --config baseUrl=http://demo-app.{{ .Release.Namespace }}.svc.cluster.local:8080 \
                 --config expectedPr={{ .Values.prNumber }} \
                 --config gitRevision={{ .Values.commitSha | default "main" }} \
                 --tag pr={{ .Values.prNumber }} \
                 --tag sha={{ .Values.commitSha | trunc 7 }} \
                 --target name={{ .Values.testkubeHook.runner }} \
-                --watch
+                --output go --go-template '{{ "{{" }}.Id{{ "}}" }}')
+              echo "Started Testkube execution $EXECUTION_ID"
+              echo "https://app.testkube.io/organization/$TESTKUBE_ORG_ID/environment/$TESTKUBE_ENV_ID/dashboard/test-workflows/{{ .Values.testkubeHook.workflow }}/execution/$EXECUTION_ID"
+
+              # Poll for the result rather than streaming logs, so a dropped log
+              # stream can never leave the hook waiting forever.
+              while true; do
+                STATUS=$(testkube get testworkflowexecution "$EXECUTION_ID" \
+                  --output go --go-template '{{ "{{" }}.Result.Status{{ "}}" }}' 2>/dev/null || true)
+                case "$STATUS" in
+                  passed)
+                    echo "Tests passed"; exit 0 ;;
+                  failed|aborted|canceled|cancelled)
+                    echo "Tests finished with status: $STATUS"; exit 1 ;;
+                esac
+                sleep 5
+              done
           env:
             # The CLI writes its config under $HOME; the image's default HOME is not writable.
             - name: HOME

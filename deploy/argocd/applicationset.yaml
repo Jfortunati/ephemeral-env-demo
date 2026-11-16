@@ -59,3 +59,7 @@ spec:
         automated:
           prune: true
           selfHeal: true
+        # Do not retry a failed sync. A failed sync here means the tests failed, and retrying
+        # would only start the same tests again. The next commit to the pull request syncs again.
+        retry:
+          limit: 0
