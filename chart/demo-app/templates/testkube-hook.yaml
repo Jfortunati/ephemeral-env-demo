@@ -9,7 +9,8 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: e2e-pr-{{ .Values.prNumber }}
+  # Unique per commit, so Argo CD always waits on this commit's run, never a previous one.
+  name: e2e-pr-{{ .Values.prNumber }}-{{ .Values.commitSha | trunc 7 }}
   namespace: {{ .Values.testkubeHook.namespace }}
   labels:
     {{- include "demo-app.labels" . | nindent 4 }}
