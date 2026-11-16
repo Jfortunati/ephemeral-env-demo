@@ -40,6 +40,10 @@ jobs:
             # main on pushes to main
             type=raw,value=main,enable={{is_default_branch}}
 
+      # Build for both Intel and ARM, so the image runs on cloud clusters and on Apple silicon laptops.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -47,6 +51,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: app
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

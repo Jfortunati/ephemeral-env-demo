@@ -1,0 +1,70 @@
+{{- if .Values.testkubeHook.enabled }}
+# Argo CD PostSync hook: once the app is synced and healthy, start the
+# end-to-end tests in Testkube against this environment and wait for the result.
+# A failed test run makes this Job fail, which shows as a failed sync in Argo CD.
+#
+# The Job runs in a fixed namespace (not the pull request namespace) so it can read
+# the pre-created "testkube-api" secret with the Testkube API token, org ID and environment ID.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: e2e-pr-{{ .Values.prNumber }}
+  namespace: {{ .Values.testkubeHook.namespace }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    # Keep the last run visible in Argo CD; it is replaced on the next sync.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ .Values.testkubeHook.ttlSecondsAfterFinished }}
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: run-e2e
+          image: {{ .Values.testkubeHook.cliImage }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              testkube set context \
+                --api-key "$TESTKUBE_API_KEY" \
+                --org-id "$TESTKUBE_ORG_ID" \
+                --env-id "$TESTKUBE_ENV_ID"
+              testkube run testworkflow {{ .Values.testkubeHook.workflow }} \
+                --config baseUrl=http://demo-app.{{ .Release.Namespace }}.svc.cluster.local:8080 \
+                --config expectedPr={{ .Values.prNumber }} \
+                --tag pr={{ .Values.prNumber }} \
+                --tag sha={{ .Values.commitSha | trunc 7 }} \
+                --target name={{ .Values.testkubeHook.runner }} \
+                --watch
+          env:
+            # The CLI writes its config under $HOME; the image's default HOME is not writable.
+            - name: HOME
+              value: /tmp
+            - name: TESTKUBE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: testkube-api
+                  key: token
+            - name: TESTKUBE_ORG_ID
+              valueFrom:
+                secretKeyRef:
+                  name: testkube-api
+                  key: org-id
+            - name: TESTKUBE_ENV_ID
+              valueFrom:
+                secretKeyRef:
+                  name: testkube-api
+                  key: env-id
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+{{- end }}
