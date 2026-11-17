@@ -268,3 +268,14 @@ tk_follow() {
     sleep 3
   done
 }
+
+# Make sure the Argo CD UI answers on https://localhost:8443, restarting the
+# port-forward if it is missing or went stale (for example after Argo CD restarted).
+argocd_ui() {
+  if port_forward_running argocd && curl -sk -m 3 -o /dev/null https://localhost:8443/healthz; then
+    ok "Argo CD UI is up on https://localhost:8443 (no login needed)"
+    return 0
+  fi
+  port_forward argocd argocd argocd-server 8443 443
+  ok "Argo CD UI is up on https://localhost:8443 (no login needed)"
+}

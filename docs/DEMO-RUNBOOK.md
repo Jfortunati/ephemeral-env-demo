@@ -19,7 +19,7 @@ Each step below also has its own `just` command (`just menu` lists them), for ru
 ## Before the demo
 
 - [ ] `just doctor` reports *All ready*. It checks the cluster, the logins, the Testkube runner, Argo CD, the secrets, the Testkube workflows, the pre-pulled images, leftover namespaces and the fallback runs, and prints the fix for anything missing. It changes nothing.
-- [ ] `just links` prints every URL (Testkube, Argo CD, GitHub), starts the Argo CD UI port-forward, and copies the Argo CD admin password to the clipboard.
+- [ ] `just links` prints every URL (Testkube, Argo CD, GitHub), and starts the Argo CD UI (no login needed).
 - [ ] Open tabs: the Testkube dashboard, the Argo CD UI, the GitHub repository, and a terminal. `just start` opens the pod watch window itself.
 
 ## Path 2: Testkube deploys and tests (`just start testkube`)

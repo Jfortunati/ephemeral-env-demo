@@ -73,7 +73,7 @@ plan:
     s 5 "Same again on the branch with a failing test: teardown still runs"
 
     h "Argo CD demo: Argo CD deploys each pull request, Testkube tests it" "just start argo"
-    s 1 "Checks Argo CD, starts its UI, copies the admin password, opens Argo CD and Testkube"
+    s 1 "Checks Argo CD, starts its UI (no login needed), opens Argo CD and Testkube"
     s 2 "Opens a pod watch in a new terminal window"
     s 3 "Opens a GitHub pull request and shows it, then the Argo CD app for it"
     s 4 "Waits for the image build (about 1.5 min) and the deploy, opens the app"
@@ -151,9 +151,7 @@ start demo="" mode="":
     preflight
     ready=$(kubectl -n argocd get deploy argocd-server -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
     [[ "${ready:-0}" -ge 1 ]] || die "Argo CD is not running. Run: just doctor"
-    port_forward_running argocd || port_forward argocd argocd argocd-server 8443 443
-    pw=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)
-    [[ -n "$pw" ]] && printf %s "$pw" | pbcopy && ok "Argo CD admin password copied to the clipboard (user: admin)"
+    argocd_ui
     browse "https://localhost:8443/applications"
     browse "$(tk_workflow_url demo-app-e2e)"
     step 2 "Pod watch"
@@ -274,6 +272,8 @@ doctor:
       ready=$(kubectl -n argocd get deploy argocd-server -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
       if [[ "${ready:-0}" -ge 1 ]]; then ok "Argo CD is running"
       else problem "Argo CD is not running" "see step 3 of docs/SETUP.md"; fi
+      if [[ "$(kubectl -n argocd get cm argocd-cm -o jsonpath='{.data.users\.anonymous\.enabled}' 2>/dev/null)" == "true" ]]; then ok "Argo CD UI needs no login"
+      else problem "Argo CD UI asks for a login" "see 'Turn off the Argo CD login' in step 3 of docs/SETUP.md"; fi
 
       # 8, 9. Secrets
       if kubectl -n argocd get secret github-token >/dev/null 2>&1; then ok "GitHub token secret exists (for Argo CD)"
@@ -337,27 +337,19 @@ doctor:
       ok "All ready."
     fi
 
-# Print every URL the demo uses, and start the Argo CD UI port-forward
+# Print every URL the demo uses, and start the Argo CD UI
 [group('1. Start here')]
 links:
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
-    if ! port_forward_running argocd; then
-      port_forward argocd argocd argocd-server 8443 443 >/dev/null
-    fi
-    pw=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)
+    argocd_ui >/dev/null
     echo
     printf '%sTestkube%s\n' "$BOLD" "$RESET"
     info "Dashboard                 $TK_DASHBOARD"
     info "demo-app-ephemeral        $(tk_workflow_url demo-app-ephemeral)"
     info "demo-app-e2e              $(tk_workflow_url demo-app-e2e)"
     printf '%sArgo CD%s\n' "$BOLD" "$RESET"
-    info "UI                        https://localhost:8443   (accept the self-signed certificate)"
-    if [[ -n "$pw" ]] && printf %s "$pw" | pbcopy 2>/dev/null; then
-      info "Login                     admin  (password copied to the clipboard)"
-    else
-      info "Login                     admin  (password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
-    fi
+    info "UI                        https://localhost:8443   (no login; accept the self-signed certificate)"
     printf '%sGitHub%s\n' "$BOLD" "$RESET"
     info "Repository                https://github.com/$GH_REPO"
     info "Actions (image builds)    https://github.com/$GH_REPO/actions"

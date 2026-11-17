@@ -51,12 +51,19 @@ kubectl apply -n argocd --server-side --force-conflicts \
 kubectl -n argocd rollout status deploy/argocd-server
 ```
 
-Open the Argo CD UI:
+Turn off the Argo CD login. This cluster is a local demo, so anyone who can reach the UI gets full admin rights without a password. Do not do this on a shared cluster.
+
+```sh
+kubectl -n argocd patch cm argocd-cm --type merge -p '{"data":{"users.anonymous.enabled":"true"}}'
+kubectl -n argocd patch cm argocd-rbac-cm --type merge -p '{"data":{"policy.default":"role:admin"}}'
+kubectl -n argocd rollout restart deploy/argocd-server
+```
+
+Open the Argo CD UI (`just links` does this):
 
 ```sh
 kubectl -n argocd port-forward svc/argocd-server 8443:443
-# https://localhost:8443  user: admin
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+# https://localhost:8443, no login
 ```
 
 ## 4. Create the two secrets (once)
