@@ -49,15 +49,169 @@ STATE_DIR := ".demo-state"
 
 # ---------------------------------------------------------------------------
 
-# Open the demo menu
+# Show the demo plans
 [private]
-default:
+default: plan
+
+# ===== Start here ==========================================================
+
+# Show both demos, step by step, and the command that runs each one
+[group('1. Start here')]
+plan:
+    #!/usr/bin/env bash
+    source scripts/demo-lib.sh
+    h() { printf '\n%s%s%s   %s%s%s\n' "$BOLD" "$1" "$RESET" "$BLUE" "$2" "$RESET"; }
+    s() { printf '  %s%s%s  %s\n' "$DIM" "$1" "$RESET" "$2"; }
+    printf '%sTwo demos. One command runs each, start to finish.%s\n' "$BOLD" "$RESET"
+
+    h "Testkube demo: Testkube deploys, tests and tears down" "just start testkube"
+    s 1 "Checks minikube and the Testkube runner"
+    s 2 "Opens a pod watch in a new terminal window"
+    s 3 "Opens the demo-app-ephemeral workflow in the Testkube dashboard; you click Run"
+    s " " "(auto: starts the run from the terminal and opens it in the dashboard)"
+    s 4 "Follows the run: namespace created, app installed, tests, namespace deleted"
+    s 5 "Same again on the branch with a failing test: teardown still runs"
+
+    h "Argo CD demo: Argo CD deploys each pull request, Testkube tests it" "just start argo"
+    s 1 "Checks Argo CD, starts its UI, copies the admin password, opens Argo CD and Testkube"
+    s 2 "Opens a pod watch in a new terminal window"
+    s 3 "Opens a GitHub pull request and shows it, then the Argo CD app for it"
+    s 4 "Waits for the image build (about 1.5 min) and the deploy, opens the app"
+    s 5 "Follows the Testkube tests the Argo CD hook starts, opens the execution"
+    s 6 "Closes the pull request and waits for its namespace to go (about 3 min)"
+
+    printf '\n%sHow it runs%s\n' "$BOLD" "$RESET"
+    info "Each demo pauses before each step so you can talk; press Enter to go on."
+    info "Add auto (just start testkube auto) to run straight through without waiting for you."
+    printf '\n%sAround the demos%s\n' "$BOLD" "$RESET"
+    info "Before the call   just doctor     checks everything, changes nothing"
+    info "After the call    just reset      closes pull requests opened during the demo"
+    info "One step at a time   just menu"
+
+# Run a demo start to finish: `just start testkube` or `just start argo` (add `auto` to skip pauses)
+[group('1. Start here')]
+start demo="" mode="":
+    #!/usr/bin/env bash
+    source scripts/demo-lib.sh
+    demo="{{ demo }}"; mode="{{ mode }}"
+    case "$mode" in
+      "") export AUTO=0 ;;
+      auto) export AUTO=1 ;;
+      *) die "Unknown option '$mode'. Use nothing or: auto" ;;
+    esac
+    export GUIDED=1
+    case "$demo" in
+      testkube) ;;
+      argo) ;;
+      *) just plan; echo; die "Say which demo: just start testkube   or   just start argo" ;;
+    esac
+
+    if [[ "$demo" == "testkube" ]]; then
+      printf '%sTestkube demo: Testkube deploys, tests and tears down%s\n' "$BOLD" "$RESET"
+      step 1 "Check minikube and the Testkube runner"
+      preflight
+      step 2 "Pod watch"
+      open_watch_window
+
+      for rev in main demo/failing-test; do
+        if [[ "$rev" == "main" ]]; then
+          pause "open the workflow in Testkube"
+          step 3 "Run demo-app-ephemeral"
+        else
+          pause "run it again on the branch with a failing test"
+          step 5 "Run demo-app-ephemeral on $rev: one test fails, teardown still runs"
+        fi
+        if [[ "$AUTO" == "1" ]]; then
+          show "testkube run testworkflow demo-app-ephemeral --config gitRevision=$rev --target name=$RUNNER"
+          id=$(tk_start_ephemeral "$rev")
+          [[ -n "$id" ]] || die "Testkube did not start the run. Try: just run-ephemeral cli"
+          ok "Started execution $id"
+          browse "$(tk_execution_url demo-app-ephemeral "$id")"
+        else
+          before=$(tk_latest_ephemeral)
+          browse "$(tk_workflow_url demo-app-ephemeral)"
+          info "Click Run, then set: runner $RUNNER, imageTag main, gitRevision $rev"
+          doing "Waiting for you to click Run in Testkube"
+          until id=$(tk_latest_ephemeral) && [[ -n "$id" && "$id" != "$before" ]]; do sleep 3; done
+          ok "Execution $id started"
+        fi
+        [[ "$rev" == "main" ]] && step 4 "Follow the run"
+        if tk_follow "$id"; then
+          next "Walk through Provision (namespace, chart, image and revision in the log), the test results, then Teardown."
+        else
+          next "Show the failed test and its screenshot under Artifacts, then point at Teardown: it still ran, and the namespace is gone."
+        fi
+      done
+      printf '\n%s✓ Testkube demo done.%s Nothing to clean up: each run removed its own namespace.\n' "$GREEN" "$RESET"
+      exit 0
+    fi
+
+    printf '%sArgo CD demo: Argo CD deploys each pull request, Testkube tests it%s\n' "$BOLD" "$RESET"
+    step 1 "Check Argo CD and open the dashboards"
+    preflight
+    ready=$(kubectl -n argocd get deploy argocd-server -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
+    [[ "${ready:-0}" -ge 1 ]] || die "Argo CD is not running. Run: just doctor"
+    port_forward_running argocd || port_forward argocd argocd argocd-server 8443 443
+    pw=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)
+    [[ -n "$pw" ]] && printf %s "$pw" | pbcopy && ok "Argo CD admin password copied to the clipboard (user: admin)"
+    browse "https://localhost:8443/applications"
+    browse "$(tk_workflow_url demo-app-e2e)"
+    step 2 "Pod watch"
+    open_watch_window
+
+    pause "open a pull request"
+    step 3 "Open a pull request"
+    just pr-open
+    n=$(cat "$STATE_DIR/last-pr")
+    doing "Waiting for Argo CD to pick up pull request #$n (it checks GitHub every 30 seconds)"
+    for _ in $(seq 1 60); do
+      kubectl -n argocd get app "demo-app-pr-$n" >/dev/null 2>&1 && break
+      sleep 3
+    done
+    if kubectl -n argocd get app "demo-app-pr-$n" >/dev/null 2>&1; then
+      ok "Argo CD created app demo-app-pr-$n"
+      browse "https://localhost:8443/applications/argocd/demo-app-pr-$n"
+    else
+      warn "Argo CD has not created demo-app-pr-$n yet; carrying on"
+    fi
+
+    step 4 "Wait for the deploy and open the app"
+    just pr-app "$n"
+
+    pause "follow the tests"
+    step 5 "Follow the Testkube tests"
+    just pr-tests "$n"
+
+    pause "close the pull request"
+    step 6 "Close the pull request"
+    just pr-close "$n"
+    doing "Waiting for namespace pr-$n to go (about 3 minutes)"
+    start=$SECONDS
+    while kubectl get ns "pr-$n" >/dev/null 2>&1; do
+      (( SECONDS - start > 420 )) && { warn "Namespace pr-$n is still terminating; just doctor will show if it stays"; break; }
+      sleep 5
+    done
+    kubectl get ns "pr-$n" >/dev/null 2>&1 || ok "Namespace pr-$n deleted after $(( (SECONDS - start) / 60 ))m $(( (SECONDS - start) % 60 ))s"
+    printf '\n%s✓ Argo CD demo done.%s Pull requests #1 and #2 stay open as fallbacks.\n' "$GREEN" "$RESET"
+
+# Watch every pod the demos create: app, Testkube test runs, Argo CD hook (Ctrl-C to stop)
+[group('1. Start here')]
+watch:
+    #!/usr/bin/env bash
+    source scripts/demo-lib.sh
+    printf '%sPods created by the demos%s  (app under test, Testkube test runs, Argo CD test hook)\n' "$BOLD" "$RESET"
+    show "kubectl get pods -A --watch-only"
+    watch_pods
+
+# Pick one demo step at a time from a list
+[group('1. Start here')]
+menu:
     @just --choose --unsorted
 
 # ===== Before the call =====================================================
 
 # Check that everything the demo needs is in place (changes nothing)
-[group('1. Before the call')]
+[group('1. Start here')]
 doctor:
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
@@ -184,7 +338,7 @@ doctor:
     fi
 
 # Print every URL the demo uses, and start the Argo CD UI port-forward
-[group('1. Before the call')]
+[group('1. Start here')]
 links:
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
@@ -209,22 +363,14 @@ links:
     info "Actions (image builds)    https://github.com/$GH_REPO/actions"
     info "Pull requests             https://github.com/$GH_REPO/pulls"
 
-# ===== Path 2: Testkube deploys and tests ==================================
-
-# Second pane: watch tk- namespaces appear and disappear (Ctrl-C to stop)
-[group('2. Path 2: Testkube deploys and tests')]
-watch-tk:
-    #!/usr/bin/env bash
-    source scripts/demo-lib.sh
-    show "kubectl get ns -w | grep tk-"
-    kubectl get ns -w | grep --line-buffered -E '^(NAME|tk-)'
+# ===== Testkube demo, one step at a time ====================================
 
 # Show how to run demo-app-ephemeral from the dashboard (or `just run-ephemeral cli` to run it here)
-[group('2. Path 2: Testkube deploys and tests')]
+[group('2. Testkube demo, one step at a time')]
 run-ephemeral mode="": (_ephemeral "main" mode)
 
 # Same, on the branch with a failing test, to show teardown still runs (`cli` to run it here)
-[group('2. Path 2: Testkube deploys and tests')]
+[group('2. Testkube demo, one step at a time')]
 run-failing mode="": (_ephemeral "demo/failing-test" mode)
 
 [private]
@@ -234,21 +380,21 @@ _ephemeral revision mode:
     rev="{{ revision }}"; mode="{{ mode }}"
     cli=(testkube run testworkflow demo-app-ephemeral --config imageTag=main --config "gitRevision=$rev" --target "name=$RUNNER" -f)
     if [[ "$rev" == "main" ]]; then
-      cue="Walk through Provision (namespace, chart, image and revision in the log), the test results, then Teardown. The tk- namespace disappears in the watch-tk pane."
+      cue="Walk through Provision (namespace, chart, image and revision in the log), the test results, then Teardown. The tk- namespace disappears in the pod watch (just watch)."
     else
-      cue="One test fails and its screenshot is under Artifacts. Point at Teardown: it still ran, and the tk- namespace is gone from the watch-tk pane."
+      cue="One test fails and its screenshot is under Artifacts. Point at Teardown: it still ran, and the tk- namespace is gone."
     fi
     case "$mode" in
       "")
         printf '%sRun this from the Testkube dashboard:%s\n' "$BOLD" "$RESET"
-        info "Workflow       $(tk_workflow_url demo-app-ephemeral)"
+        browse "$(tk_workflow_url demo-app-ephemeral)"
         info "Click Run, then set:"
         info "  Runner       $RUNNER"
         info "  imageTag     main"
         info "  gitRevision  $rev"
         echo
         printf '%sBackup, from this terminal:%s just %s cli\n' "$DIM" "$RESET" "$([[ $rev == main ]] && echo run-ephemeral || echo run-failing)"
-        next "While it runs (about 2 minutes), show the tk- namespace appear in the second pane (just watch-tk). $cue" ;;
+        next "While it runs (about 2 minutes), show the pods appear in the pod watch (just watch). $cue" ;;
       cli)
         run "${cli[@]}" || true
         next "$cue Same run in the dashboard: $(tk_workflow_url demo-app-ephemeral)" ;;
@@ -256,10 +402,10 @@ _ephemeral revision mode:
         die "Unknown option '$mode'. Use nothing (dashboard) or: cli" ;;
     esac
 
-# ===== Path 1: Argo CD deploys, Testkube tests =============================
+# ===== Argo CD demo, one step at a time =====================================
 
 # Open a pull request with a small visible change to the app
-[group('3. Path 1: Argo CD deploys, Testkube tests')]
+[group('3. Argo CD demo, one step at a time')]
 pr-open:
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
@@ -292,25 +438,21 @@ pr-open:
     cd - >/dev/null
     echo "$n" > "$STATE_DIR/last-pr"
     ok "Pull request #$n: $url"
+    browse "$url"
     next "GitHub Actions builds the image (about 1.5 minutes): https://github.com/$GH_REPO/actions . Within 30 seconds the Argo CD app demo-app-pr-$n appears: https://localhost:8443/applications/argocd/demo-app-pr-$n . Then: just pr-app"
 
-# Second pane: watch pr- namespaces appear and disappear (Ctrl-C to stop)
-[group('3. Path 1: Argo CD deploys, Testkube tests')]
-watch-pr:
-    #!/usr/bin/env bash
-    source scripts/demo-lib.sh
-    show "kubectl get ns -w | grep pr-"
-    kubectl get ns -w | grep --line-buffered -E '^(NAME|pr-)'
-
 # Open the pull request's app on localhost:8080, waiting until it is ready (default: last pr-open)
-[group('3. Path 1: Argo CD deploys, Testkube tests')]
+[group('3. Argo CD demo, one step at a time')]
 pr-app number="":
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
     n=$(resolve_pr "{{ number }}"); ns="pr-$n"
     show "kubectl -n $ns rollout status deploy/demo-app"
-    start=$SECONDS; last=""
+    start=$SECONDS; last=""; shown_argo=0
     until kubectl -n "$ns" rollout status deploy/demo-app --timeout=5s >/dev/null 2>&1; do
+      if (( ! shown_argo && ! ${GUIDED:-0} )) && port_forward_running argocd && kubectl -n argocd get app "demo-app-pr-$n" >/dev/null 2>&1; then
+        browse "https://localhost:8443/applications/argocd/demo-app-pr-$n"; shown_argo=1
+      fi
       if ! kubectl get ns "$ns" >/dev/null 2>&1; then
         msg="Waiting for Argo CD to create namespace $ns (it checks GitHub every 30 seconds)"
       else
@@ -327,11 +469,11 @@ pr-app number="":
     done
     ok "App in $ns is ready"
     port_forward app "$ns" demo-app 8080 8080
-    ok "http://localhost:8080"
-    next "Open http://localhost:8080 . The banner shows $ns, pull request #$n and the commit. Then: just pr-tests"
+    browse "http://localhost:8080"
+    next "The banner shows $ns, pull request #$n and the commit. Then: just pr-tests"
 
 # Follow the Argo CD hook that runs the Testkube tests for the pull request (default: last pr-open)
-[group('3. Path 1: Argo CD deploys, Testkube tests')]
+[group('3. Argo CD demo, one step at a time')]
 pr-tests number="":
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
@@ -348,8 +490,8 @@ pr-tests number="":
         exe=$(testkube get testworkflowexecution -w demo-app-e2e --tag "pr=$n" --tag "sha=$sha7" --limit 1 -o json 2>/dev/null)
         id=$(jq -r '.[0].id // empty' <<<"$exe"); status=$(jq -r '.[0].result.status // empty' <<<"$exe")
         ok "Tests for #$n at $sha7 already finished: $status (Argo CD sync: $phase)"
-        [[ -n "$id" ]] && info "$(tk_execution_url demo-app-e2e "$id")"
-        next "Open the Testkube execution above: it is tagged pr=$n and sha=$sha7. In Argo CD, demo-app-pr-$n shows the sync as $phase."
+        [[ -n "$id" ]] && browse "$(tk_execution_url demo-app-e2e "$id")"
+        next "The Testkube execution is tagged pr=$n and sha=$sha7. In Argo CD, demo-app-pr-$n shows the sync as $phase."
         exit 0
       fi
       ((said)) || { doing "Waiting for Argo CD to start the test hook (it runs once the app is healthy)"; said=1; }
@@ -357,7 +499,10 @@ pr-tests number="":
       sleep 5
     done
     show "kubectl -n demo-ops logs -f job/$job"
-    until kubectl -n demo-ops logs -f "job/$job" 2>/dev/null; do sleep 3; done
+    until kubectl -n demo-ops logs -f "job/$job" 2>/dev/null | while IFS= read -r line; do
+            printf '%s\n' "$line"
+            if [[ "$line" == https://app.testkube.io/* ]]; then browse "$line"; fi
+          done; do sleep 3; done
     # The log stream ends a moment before the job records its result.
     result=""
     for _ in $(seq 1 30); do
@@ -366,13 +511,13 @@ pr-tests number="":
       sleep 1
     done
     if [[ "$(kubectl -n demo-ops get job "$job" -o jsonpath='{.status.succeeded}' 2>/dev/null)" == "1" ]]; then
-      next "Open the Testkube link above: the demo-app-e2e execution is tagged pr=$n and sha=$sha7. In Argo CD, demo-app-pr-$n shows the sync as Succeeded. Then: just pr-close"
+      next "The demo-app-e2e execution is tagged pr=$n and sha=$sha7. In Argo CD, demo-app-pr-$n shows the sync as Succeeded. Then: just pr-close"
     else
-      next "Open the Testkube link above to show the failing test. In Argo CD, demo-app-pr-$n shows the sync as Failed, with the hook as the failed step."
+      next "Show the failing test in the Testkube execution. In Argo CD, demo-app-pr-$n shows the sync as Failed, with the hook as the failed step."
     fi
 
 # Close the pull request; Argo CD then deletes its environment (default: last pr-open)
-[group('3. Path 1: Argo CD deploys, Testkube tests')]
+[group('3. Argo CD demo, one step at a time')]
 pr-close number="":
     #!/usr/bin/env bash
     source scripts/demo-lib.sh
@@ -382,7 +527,7 @@ pr-close number="":
     stop_port_forward app
     run gh pr close "$n" --repo "$GH_REPO" --delete-branch
     [[ "$(cat "$STATE_DIR/last-pr" 2>/dev/null)" == "$n" ]] && rm -f "$STATE_DIR/last-pr"
-    next "Argo CD deletes demo-app-pr-$n within 30 seconds. Namespace pr-$n takes about 3 minutes to finish terminating; watch it in the second pane (just watch-pr)."
+    next "Argo CD deletes demo-app-pr-$n within 30 seconds. Namespace pr-$n takes about 3 minutes to finish terminating; watch it in the pod watch (just watch)."
 
 # ===== After the call ======================================================
 

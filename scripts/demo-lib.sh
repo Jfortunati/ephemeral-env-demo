@@ -33,7 +33,12 @@ quiet() {
   fi
 }
 
-next()  { printf '\n%s→ Next:%s %s\n' "$BOLD" "$RESET" "$*"; }
+# In a guided demo (just start) the next step runs by itself, so drop the "Then: just ..." hint.
+next() {
+  local msg="$*"
+  [[ "${GUIDED:-0}" == "1" ]] && msg="${msg%% Then: just*}"
+  printf '\n%s→ Next:%s %s\n' "$BOLD" "$RESET" "$msg"
+}
 
 # Strip colour codes from CLI output so it can be matched.
 plain() { sed -e $'s/\033\\[[0-9;]*m//g'; }
@@ -130,4 +135,136 @@ leftover_namespaces() {
 live_prs() {
   gh pr list --repo "$GH_REPO" --state open --json number,labels \
     --jq "[.[] | select(any(.labels[]; .name == \"$LIVE_LABEL\")) | .number] | .[]" 2>/dev/null || true
+}
+
+# Open a URL in the default browser (set NO_BROWSER=1 to only print it).
+browse() {
+  info "Opening $1"
+  [[ -n "${NO_BROWSER:-}" ]] || open "$1" >/dev/null 2>&1 || true
+}
+
+# Between steps of a guided demo: wait for Enter, unless AUTO=1.
+#   pause "<what happens next>"
+pause() {
+  if [[ "${AUTO:-}" == "1" ]]; then return 0; fi
+  printf '\n%s⏎  Press Enter to %s%s (Ctrl-C to stop) ' "$BOLD" "$1" "$RESET"
+  read -r _ </dev/tty
+}
+
+# A numbered heading for each step of a guided demo.
+step() { printf '\n%s%s[%s] %s%s\n' "$BOLD" "$BLUE" "$1" "$2" "$RESET"; }
+
+# Fast checks before a guided demo; `just doctor` is the full version.
+preflight() {
+  kubectl get ns default >/dev/null 2>&1 || die "Can't reach minikube. Run: just doctor"
+  local ready
+  ready=$(kubectl -n testkube get deploy "testkube-$RUNNER-testkube-runner" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
+  [[ "${ready:-0}" -ge 1 ]] || die "Testkube runner $RUNNER is not running. Run: just doctor"
+  testkube get context 2>/dev/null | plain | grep -q "$TK_ENV" || die "Testkube CLI is not pointed at the demo environment. Run: just doctor"
+  ok "minikube and the Testkube runner are up"
+}
+
+# Open `just watch` in a new terminal window, unless one is already running.
+open_watch_window() {
+  if pgrep -f "kubectl get pods -A --watch-only" >/dev/null 2>&1; then
+    ok "Pod watch is already running"
+    return 0
+  fi
+  local cmd="cd '$PWD' && clear && just watch"
+  case "${TERM_PROGRAM:-}" in
+    Apple_Terminal)
+      osascript -e "tell application \"Terminal\" to do script \"$cmd\"" >/dev/null 2>&1 \
+        && { ok "Opened the pod watch in a new Terminal window"; return 0; } ;;
+    iTerm.app)
+      osascript -e "tell application \"iTerm\" to create window with default profile command \"/bin/zsh -lc \\\"$cmd\\\"\"" >/dev/null 2>&1 \
+        && { ok "Opened the pod watch in a new iTerm window"; return 0; } ;;
+  esac
+  warn "Open a second terminal pane in this folder and run: just watch"
+}
+
+# Stream every pod the demo creates: app pods in pr-/tk- namespaces, Testkube test
+# pods for the demo workflows, and the Argo CD test hook. One line per status change.
+watch_pods() {
+  kubectl get pods -A --watch-only --output-watch-events -o json 2>/dev/null \
+  | jq -r --unbuffered '
+      .type as $t | .object
+      | [ $t, .metadata.namespace, .metadata.name,
+          (if $t == "DELETED" then "Deleted"
+           elif .metadata.deletionTimestamp then "Terminating"
+           else ([.status.containerStatuses[]?.state | (.waiting.reason // .terminated.reason // empty)] | first) // .status.phase
+           end),
+          (.metadata.labels["testkube.io/workflow-name"] // "") ] | @tsv' \
+  | awk -F'\t' -v g="$GREEN" -v r="$RED" -v y="$YELLOW" -v d="$DIM" -v z="$RESET" '
+      {
+        ns=$2; name=$3; st=$4; wf=$5; role=""
+        if (ns ~ /^tk-/ || ns ~ /^pr-/) role="app under test"
+        else if (ns == "demo-ops") role="Argo CD test hook"
+        else if (ns == "testkube" && (wf == "demo-app-ephemeral" || wf == "demo-app-e2e")) role="Testkube run: " wf
+        if (role == "") next
+        if (st ~ /ImagePull/ && ns ~ /^pr-/) role=role " (image still building)"
+        key=ns "/" name
+        if (seen[key] == st) next
+        seen[key]=st
+        c=""
+        if (st == "Running" || st == "Completed" || st == "Succeeded") c=g
+        else if (st ~ /Err|BackOff|Failed|Error/) c=r
+        else if (st == "Terminating" || st == "Deleted") c=d
+        else c=y
+        cmd="date +%H:%M:%S"; cmd | getline ts; close(cmd)
+        printf "%s  %-28s %-44s %s%-18s%s %s%s%s\n", ts, ns, name, c, st, z, d, role, z
+        fflush()
+      }'
+}
+
+# Start demo-app-ephemeral from the CLI and print the execution ID.
+tk_start_ephemeral() {
+  testkube run testworkflow demo-app-ephemeral --config imageTag=main --config "gitRevision=$1" \
+    --target "name=$RUNNER" --output go --go-template '{{.Id}}' 2>/dev/null | tr -d '[:space:]'
+}
+
+# ID of the newest demo-app-ephemeral execution.
+tk_latest_ephemeral() {
+  testkube get testworkflowexecution -w demo-app-ephemeral --limit 1 -o json 2>/dev/null | jq -r '.[0].id // empty'
+}
+
+# Follow an execution until it finishes, reporting its namespace as it is created and removed.
+#   tk_follow <execution-id>   (returns 0 if passed)
+tk_follow() {
+  local id=$1 ns="tk-$1" status="" last_status="" phase="" last_phase="none"
+  show "testkube get testworkflowexecution $id   (every 3 seconds)"
+  while true; do
+    status=$(testkube get testworkflowexecution "$id" --output go --go-template '{{.Result.Status}}' 2>/dev/null | tr -d '[:space:]' || true)
+    phase=$(kubectl get ns "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    phase=${phase:-none}
+    if [[ "$phase" != "$last_phase" ]]; then
+      case "$phase" in
+        Active) doing "Namespace $ns created" ;;
+        Terminating) doing "Namespace $ns is being deleted" ;;
+        none) [[ "$last_phase" != "none" ]] && ok "Namespace $ns deleted" ;;
+      esac
+      last_phase=$phase
+    fi
+    if [[ -n "$status" && "$status" != "$last_status" ]]; then
+      case "$status" in
+        queued|running) doing "Execution $status" ;;
+      esac
+      last_status=$status
+    fi
+    case "$status" in
+      passed|failed|aborted|canceled|cancelled)
+        # Teardown deletes the namespace as the run's last step; give it a moment to go.
+        for _ in $(seq 1 20); do
+          kubectl get ns "$ns" >/dev/null 2>&1 || break
+          sleep 3
+        done
+        if kubectl get ns "$ns" >/dev/null 2>&1; then
+          warn "Namespace $ns still exists"
+        elif [[ "$last_phase" != "none" ]]; then
+          ok "Namespace $ns deleted"
+        fi
+        if [[ "$status" == "passed" ]]; then ok "Tests passed"; return 0; fi
+        bad "Tests $status"; return 1 ;;
+    esac
+    sleep 3
+  done
 }
