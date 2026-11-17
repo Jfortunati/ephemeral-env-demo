@@ -23,7 +23,7 @@ function addItem(title, done = false) {
   return item;
 }
 addItem('Review release notes', true);
-addItem('Run end-to-end tests');
+addItem('Run end-to-end tests (2026-11-17 11:05)');
 addItem('Approve deployment');
 
 app.get('/healthz', (req, res) => {
