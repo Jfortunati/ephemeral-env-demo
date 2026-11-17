@@ -47,7 +47,7 @@ spec:
                 --tag pr={{ .Values.prNumber }} \
                 --tag sha={{ .Values.commitSha | trunc 7 }} \
                 --target name={{ .Values.testkubeHook.runner }} \
-                --output go --go-template '{{ "{{" }}.Id{{ "}}" }}')
+                --output go --go-template '{{ "{{" }}.Id{{ "}}" }}' | tr -d '[:space:]')
               echo "Started Testkube execution $EXECUTION_ID"
               echo "https://app.testkube.io/organization/$TESTKUBE_ORG_ID/environment/$TESTKUBE_ENV_ID/dashboard/test-workflows/{{ .Values.testkubeHook.workflow }}/execution/$EXECUTION_ID"
 
