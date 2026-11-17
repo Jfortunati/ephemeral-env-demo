@@ -15,6 +15,18 @@ One small web app and one Playwright test suite, deployed and tested in short-li
 | `deploy/testkube/` | RBAC for the provisioning workflow |
 | `.github/workflows/` | Image build |
 | `docs/` | Setup and demo runbook |
+| `justfile`, `scripts/` | Demo commands: run `just` for a menu |
+| `Brewfile` | Tools, installed with `brew bundle` |
+
+## Demo commands
+
+```sh
+brew bundle      # install the tools
+just doctor      # check everything the demo needs
+just             # pick demo steps from a menu
+```
+
+See [docs/DEMO-RUNBOOK.md](docs/DEMO-RUNBOOK.md) for what each step shows.
 
 ## Run locally
 

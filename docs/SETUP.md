@@ -2,7 +2,9 @@
 
 Everything needed to go from a laptop to a working demo of both paths. Steps marked *once* only need doing on a fresh machine.
 
-Tools: colima (or Docker Desktop), minikube, kubectl, Helm, the Testkube CLI, and the GitHub CLI.
+Tools: colima (or Docker Desktop), minikube, kubectl, Helm, the Testkube CLI, and the GitHub CLI. `brew bundle` in the repository root installs them, plus `just`, `fzf` and `jq` for the demo commands.
+
+To see which of the steps below still need doing, run `just doctor`. It checks each one, changes nothing, and prints the fix for anything missing.
 
 ## 1. Size the cluster (once)
 
@@ -113,6 +115,8 @@ minikube image pull ghcr.io/jfortunati/ephemeral-env-demo:main
 ```
 
 ## Check it works
+
+`just doctor` should report *All ready*. Then:
 
 ```sh
 testkube run testworkflow demo-app-ephemeral --target name=jf-minikube -f

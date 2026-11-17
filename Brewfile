@@ -1,0 +1,11 @@
+# Tools for the ephemeral environment demo. Install with: brew bundle
+brew "just"
+brew "fzf"
+brew "jq"
+brew "colima"
+brew "docker"
+brew "minikube"
+brew "kubernetes-cli"
+brew "helm"
+brew "testkube"
+brew "gh"
