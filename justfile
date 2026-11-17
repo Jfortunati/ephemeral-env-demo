@@ -130,7 +130,7 @@ start demo="" mode="":
         else
           before=$(tk_latest_ephemeral)
           browse "$(tk_workflow_url demo-app-ephemeral)"
-          info "Click Run, then set: runner $RUNNER, imageTag main, gitRevision $rev"
+          info "Click Run, then pick runner $RUNNER and choose $rev in the gitRevision dropdown (imageTag stays main)"
           doing "Waiting for you to click Run in Testkube"
           until id=$(tk_latest_ephemeral) && [[ -n "$id" && "$id" != "$before" ]]; do sleep 3; done
           ok "Execution $id started"
@@ -391,7 +391,7 @@ _ephemeral revision mode:
         info "Click Run, then set:"
         info "  Runner       $RUNNER"
         info "  imageTag     main"
-        info "  gitRevision  $rev"
+        info "  gitRevision  $rev   (dropdown)"
         echo
         printf '%sBackup, from this terminal:%s just %s cli\n' "$DIM" "$RESET" "$([[ $rev == main ]] && echo run-ephemeral || echo run-failing)"
         next "While it runs (about 2 minutes), show the pods appear in the pod watch (just watch). $cue" ;;

@@ -17,8 +17,11 @@ spec:
       default: main
     gitRevision:
       type: string
-      description: Branch or commit of the chart and tests to use
+      description: "Branch of the chart and tests: main passes, demo/failing-test has one failing test"
       default: main
+      enum:
+        - main
+        - demo/failing-test
   content:
     git:
       uri: https://github.com/Jfortunati/ephemeral-env-demo

@@ -36,7 +36,7 @@ One Testkube workflow creates the environment, tests it and removes it.
    - **Run end-to-end tests**: the test cases, the Playwright report and (on failure) screenshots and traces under Artifacts.
    - **Tear down environment**: the namespace is deleted. The pod watch shows the app pod terminate.
 
-**Showing cleanup on failure:** run it again with Git revision `demo/failing-test` (`just run-failing`). That branch expects a page title the app doesn't have, so one test fails, a screenshot is saved, and teardown still removes the namespace.
+**Showing cleanup on failure:** run it again and pick `demo/failing-test` in the gitRevision dropdown (`just run-failing`). That branch expects a page title the app doesn't have, so one test fails, a screenshot is saved, and teardown still removes the namespace.
 
 ## Path 1: Argo CD deploys, Testkube tests (`just start argo`)
 
