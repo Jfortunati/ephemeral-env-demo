@@ -569,7 +569,12 @@ setup runner="":
     tools_ok() { for t in "${tools[@]}"; do command -v "$t" || return 1; done; }
     tools_fix() {
       command -v brew >/dev/null || die "Homebrew is not installed. Install it from https://brew.sh, then rerun: just setup"
-      run brew bundle --file Brewfile
+      # Install only what is missing; never upgrade tools the laptop already has.
+      if ! run brew bundle install --file Brewfile --no-upgrade; then
+        tools_ok >/dev/null 2>&1 \
+          || die "Homebrew could not install every tool (its error is above). Fix that, then rerun: just setup"
+        warn "Homebrew reported an error above, but every tool the demo needs works. Carrying on."
+      fi
     }
     ensure "Tools installed" tools_ok tools_fix
 
