@@ -339,3 +339,6 @@ render_appset() {
       done=1
     }' deploy/argocd/applicationset.yaml
 }
+
+# CPUs and memory (bytes) of the VM Docker runs in.
+docker_size() { docker info --format '{{.NCPU}} {{.MemTotal}}' 2>/dev/null; }

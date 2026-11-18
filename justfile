@@ -579,9 +579,32 @@ setup runner="":
     ensure "Tools installed" tools_ok tools_fix
 
     step 2 "Docker and minikube"
+    # Docker's VM needs COLIMA_MEMORY_GB, and macOS needs room on top of that.
+    laptop_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+    (( laptop_gb >= COLIMA_MEMORY_GB + 4 )) \
+      || die "This laptop has ${laptop_gb} GB of memory. The demo gives Docker's VM ${COLIMA_MEMORY_GB} GB (minikube needs ${MINIKUBE_MEMORY_MB} MB of it), so it needs a laptop with at least $(( COLIMA_MEMORY_GB + 4 )) GB."
+    ok "Laptop has ${laptop_gb} GB of memory"
+
     docker_ok() { docker info; }
     docker_fix() { run colima start --cpu "$COLIMA_CPUS" --memory "$COLIMA_MEMORY_GB"; }
     ensure "Docker is running" docker_ok docker_fix
+
+    # minikube runs inside Docker's VM, so the VM must be bigger than minikube.
+    vm_ok() {
+      local c m; read -r c m < <(docker_size)
+      (( c >= COLIMA_CPUS && m >= (COLIMA_MEMORY_GB - 1) * 1073741824 ))
+    }
+    vm_fix() {
+      local c m; read -r c m < <(docker_size)
+      warn "Docker's VM has $c CPUs and $(( m / 1073741824 )) GB; the demo needs $COLIMA_CPUS CPUs and $COLIMA_MEMORY_GB GB."
+      [[ "$(docker context show 2>/dev/null)" == colima* ]] \
+        || die "Docker here is not colima. In Docker Desktop set Settings > Resources to $COLIMA_CPUS CPUs and $COLIMA_MEMORY_GB GB, then rerun: just setup"
+      confirm "Restart colima at $COLIMA_CPUS CPUs and $COLIMA_MEMORY_GB GB (running containers, including minikube, stop and come back)" \
+        || die "Left as it is. Resize colima as in 'Size the cluster' in docs/SETUP.md, then rerun: just setup"
+      run colima stop
+      run colima start --cpu "$COLIMA_CPUS" --memory "$COLIMA_MEMORY_GB"
+    }
+    ensure "Docker's VM has $COLIMA_CPUS CPUs and $COLIMA_MEMORY_GB GB" vm_ok vm_fix
 
     mk_running() { [[ "$(minikube status -o json 2>/dev/null | jq -r '.Host // empty')" == "Running" ]]; }
     mk_fix() {
@@ -592,10 +615,19 @@ setup runner="":
       fi
     }
     ensure "minikube is running" mk_running mk_fix
-    read -r cpus mem < <(docker inspect minikube 2>/dev/null | jq -r '.[0].HostConfig | "\(.NanoCpus / 1e9 | floor) \(.Memory / 1048576 | floor)"')
-    (( cpus >= MINIKUBE_CPUS && mem >= MINIKUBE_MEMORY_MB )) \
-      || die "minikube has ${cpus} CPUs / ${mem} MB, needs $MINIKUBE_CPUS / $MINIKUBE_MEMORY_MB. Resize it as in 'Size the cluster' in docs/SETUP.md, then rerun: just setup"
-    ok "minikube has ${cpus} CPUs and ${mem} MB"
+    mk_size() { docker inspect minikube 2>/dev/null | jq -r '.[0].HostConfig | "\(.NanoCpus / 1e9 | floor) \(.Memory / 1048576 | floor)"'; }
+    mk_size_ok() { local c m; read -r c m < <(mk_size); (( c >= MINIKUBE_CPUS && m >= MINIKUBE_MEMORY_MB )); }
+    mk_size_fix() {
+      local c m; read -r c m < <(mk_size)
+      warn "minikube has $c CPUs and $m MB; the demo needs $MINIKUBE_CPUS CPUs and $MINIKUBE_MEMORY_MB MB."
+      info "minikube keeps the size it was created with, so it has to be deleted and created again."
+      info "Everything in this laptop's minikube cluster is lost; setup then rebuilds what the demo needs."
+      confirm "Delete this laptop's minikube cluster and create it at $MINIKUBE_CPUS CPUs and $MINIKUBE_MEMORY_MB MB" \
+        || die "Left as it is. Resize it as in 'Size the cluster' in docs/SETUP.md, then rerun: just setup"
+      run minikube delete
+      run minikube start --driver docker --cpus "$MINIKUBE_CPUS" --memory "$MINIKUBE_MEMORY_MB"
+    }
+    ensure "minikube has $MINIKUBE_CPUS CPUs and $MINIKUBE_MEMORY_MB MB" mk_size_ok mk_size_fix
     ctx_ok() { [[ "$(kubectl config current-context)" == "minikube" ]]; }
     ctx_fix() { run kubectl config use-context minikube; }
     ensure "kubectl points at minikube" ctx_ok ctx_fix
