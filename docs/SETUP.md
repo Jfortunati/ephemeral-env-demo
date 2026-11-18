@@ -4,7 +4,25 @@ Everything needed to go from a laptop to a working demo of both paths. Steps mar
 
 Tools: colima (or Docker Desktop), minikube, kubectl, Helm, the Testkube CLI, and the GitHub CLI. `brew bundle` in the repository root installs them, plus `just`, `fzf` and `jq` for the demo commands.
 
-To see which of the steps below still need doing, run `just doctor`. It checks each one, changes nothing, and prints the fix for anything missing.
+## The short way: `just setup`
+
+```sh
+brew install just
+just setup
+```
+
+`just setup` does every step below in order. Each step checks first and changes only what is missing, so it is safe to run again. It assumes the Testkube environment and the GitHub repository already exist, and it reuses them. It ends by running `just doctor`.
+
+It asks for three things:
+
+- **The runner name.** The runner is the Testkube agent in this laptop's minikube. Each laptop needs its own. Keep `jf-minikube` only on the laptop that already runs it (or after wiping that laptop); on a second laptop give a new name such as `jf-minikube-2`. If the name exists in Testkube, setup reconnects to it; if not, it creates it. The name is saved in `.demo-state/runner`, and setup points the Argo CD test hook at it, so each laptop tests its own pull request environments. `just setup <name>` skips the question.
+- **A GitHub token** and **a Testkube API token**, only if their secrets are missing (see step 4). They are typed at a hidden prompt and go straight into Kubernetes secrets.
+
+Run Argo CD on one laptop at a time: each copy deploys every open pull request.
+
+To see which of the steps below still need doing without changing anything, run `just doctor`. It checks each one and prints the fix for anything missing.
+
+The steps below are what `just setup` runs, for reference or for doing by hand.
 
 ## 1. Size the cluster (once)
 
@@ -38,7 +56,7 @@ testkube login
 testkube install runner <runner-name> --create --env <environment-id> --namespace testkube
 ```
 
-The demo assumes the runner is called `jf-minikube`. If yours has another name, change `testkubeHook.runner` in `chart/demo-app/values.yaml` and pick that runner when you run workflows from the dashboard.
+To reconnect to a runner that already exists in Testkube, leave out `--create` and `--env`. `just setup` does this for you. If the runner is not called `jf-minikube`, the Argo CD ApplicationSet needs the Helm parameter `testkubeHook.runner` set to its name (`just setup` adds it), and you pick that runner when you run workflows from the dashboard.
 
 ## 3. Install Argo CD (once)
 

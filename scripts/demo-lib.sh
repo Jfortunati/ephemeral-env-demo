@@ -279,3 +279,63 @@ argocd_ui() {
   port_forward argocd argocd argocd-server 8443 443
   ok "Argo CD UI is up on https://localhost:8443 (no login needed)"
 }
+
+# ===== Setup =================================================================
+
+# Check something, fix it only if the check fails, then check again.
+#   ensure "<what>" <check function> <fix function>
+ensure() {
+  local what=$1 check=$2 fix=$3
+  if $check >/dev/null 2>&1; then ok "$what"; return 0; fi
+  doing "$what: setting up"
+  $fix
+  $check >/dev/null 2>&1 || die "$what: still not right after setup. See the output above."
+  ok "$what"
+}
+
+# Ask a yes/no question on the terminal; default no.
+confirm() {
+  local answer
+  printf '%s? %s [y/N] ' "$YELLOW" "$1$RESET"
+  read -r answer </dev/tty || true
+  [[ "$answer" == [yY]* ]]
+}
+
+# Read a secret from the terminal without echoing it. Prints it on stdout for capture.
+#   tok=$(read_secret "GitHub token")
+read_secret() {
+  local value
+  printf '  %s: ' "$1" >/dev/tty
+  read -rs value </dev/tty || true
+  printf '\n' >/dev/tty
+  [[ -n "$value" ]] || die "Nothing entered for $1."
+  printf '%s' "$value"
+}
+
+# Seconds since a Testkube runner last checked in, or nothing if no runner has that name.
+runner_age() {
+  testkube get runner -o json 2>/dev/null | jq -r --arg n "$1" \
+    '.[] | select(.name == $n) | now - (.accessedAt | sub("\\.[0-9]+Z$"; "Z") | fromdate) | floor' 2>/dev/null | head -1
+}
+
+# The runner the Argo CD test hook targets: the ApplicationSet's testkubeHook.runner
+# parameter, or the chart's default when the parameter is not set.
+appset_runner() {
+  local r
+  r=$(kubectl -n argocd get applicationset demo-app-pull-requests -o json 2>/dev/null \
+        | jq -r '.spec.template.spec.source.helm.parameters[]? | select(.name == "testkubeHook.runner") | .value' 2>/dev/null)
+  [[ -n "$r" ]] || r=$(awk '/^testkubeHook:/{f=1} f && /^  runner:/{print $2; exit}' chart/demo-app/values.yaml)
+  printf '%s' "$r"
+}
+
+# deploy/argocd/applicationset.yaml with this laptop's runner added as a Helm parameter,
+# so the test hook of every pull request runs on this laptop and not on another one.
+render_appset() {
+  awk -v r="$RUNNER" '
+    { print }
+    /^          parameters:$/ && !done {
+      print "            - name: testkubeHook.runner"
+      print "              value: \"" r "\""
+      done=1
+    }' deploy/argocd/applicationset.yaml
+}

@@ -13,8 +13,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # Configuration. Change these when moving the demo to another account or laptop.
 # ---------------------------------------------------------------------------
 
-# Testkube runner that executes the workflows (must match testkubeHook.runner in chart/demo-app/values.yaml).
-RUNNER := "jf-minikube"
+# Testkube runner that executes the workflows. Each laptop has its own, chosen by `just setup`
+# and saved in .demo-state/runner; jf-minikube is the original laptop's runner and the default.
+# `just setup` also points the Argo CD test hook at this runner, so each laptop tests itself.
+DEFAULT_RUNNER := "jf-minikube"
+RUNNER := `cat .demo-state/runner 2>/dev/null || echo jf-minikube`
 
 # Testkube organization and environment the demo runs in. Not secret.
 TK_ORG := "tkcorg_b5ace2135f138dc8"
@@ -86,6 +89,7 @@ plan:
     printf '\n%sAround the demos%s\n' "$BOLD" "$RESET"
     info "Before the call   just doctor     checks everything, changes nothing"
     info "After the call    just reset      closes pull requests opened during the demo"
+    info "New laptop        just setup      sets everything up; safe to rerun"
     info "One step at a time   just menu"
 
 # Run a demo start to finish: `just start testkube` or `just start argo` (add `auto` to skip pauses)
@@ -255,15 +259,11 @@ doctor:
     if grep -q "$TK_ORG" <<<"$ctx" && grep -q "$TK_ENV" <<<"$ctx"; then ok "Testkube CLI is logged in to the demo environment"
     else problem "Testkube CLI is not logged in to the demo environment" "testkube login, then testkube set context --org-id $TK_ORG --env-id $TK_ENV"; fi
 
-    # Runner name in the Helm chart must match
-    chart_runner=$(awk '/^testkubeHook:/{f=1} f && /^  runner:/{print $2; exit}' chart/demo-app/values.yaml)
-    [[ "$chart_runner" == "$RUNNER" ]] || problem "Runner in chart/demo-app/values.yaml is '$chart_runner', justfile says '$RUNNER'" "make them the same"
-
     if ((cluster)); then
       # 6. Runner pod and connection
       ready=$(kubectl -n testkube get deploy "testkube-$RUNNER-testkube-runner" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
       if [[ "${ready:-0}" -ge 1 ]]; then ok "Testkube runner $RUNNER is running in minikube"
-      else problem "Testkube runner $RUNNER is not running in minikube" "kubectl -n testkube get pods; see step 2 of docs/SETUP.md"; fi
+      else problem "Testkube runner $RUNNER is not running in minikube" "just setup"; fi
       age=$(testkube get runner -o json 2>/dev/null | jq -r --arg n "$RUNNER" '.[] | select(.name == $n) | now - (.accessedAt | sub("\\.[0-9]+Z$"; "Z") | fromdate) | floor' 2>/dev/null)
       if [[ -n "$age" && "$age" -lt 120 ]]; then ok "Testkube runner $RUNNER is connected to Testkube"
       else problem "Testkube runner $RUNNER has not checked in with Testkube recently" "kubectl -n testkube logs deploy/testkube-$RUNNER-testkube-runner"; fi
@@ -298,8 +298,12 @@ doctor:
 
     if ((cluster)); then
       # 12. ApplicationSet
-      if kubectl -n argocd get applicationset demo-app-pull-requests >/dev/null 2>&1; then ok "Argo CD watches the GitHub repo's pull requests"
-      else problem "Argo CD ApplicationSet is missing" "kubectl apply -f deploy/argocd/applicationset.yaml"; fi
+      if kubectl -n argocd get applicationset demo-app-pull-requests >/dev/null 2>&1; then
+        ok "Argo CD watches the GitHub repo's pull requests"
+        hook_runner=$(appset_runner)
+        if [[ "$hook_runner" == "$RUNNER" ]]; then ok "Argo CD test hook runs on this laptop's runner ($RUNNER)"
+        else problem "Argo CD test hook runs on runner '$hook_runner', but this laptop's runner is '$RUNNER'" "just setup"; fi
+      else problem "Argo CD ApplicationSet is missing" "just setup"; fi
 
       # 13. Images
       present=$(minikube image ls 2>/dev/null)
@@ -547,3 +551,193 @@ reset keep="":
     set -e
     if ((left == 0)); then ok "No leftover namespaces"
     elif [[ -n "$prs" ]]; then info "Namespaces for the pull requests just closed take about 3 minutes to go. Check again with: just doctor"; fi
+
+# Set up a laptop from scratch; safe to run again, it changes only what is missing (`just setup <runner-name>` skips the runner question)
+[group('4. After the call')]
+setup runner="":
+    #!/usr/bin/env bash
+    source scripts/demo-lib.sh
+    # Same order as `just doctor`. Each step checks first and changes only what is missing.
+    # The Testkube environment, the GitHub repository and its fallback pull requests already
+    # exist and are reused. Tokens are typed at a hidden prompt and go straight into
+    # Kubernetes secrets; they are never written to a file or shown.
+    printf '%sSetting up this laptop for the ephemeral environment demo%s\n' "$BOLD" "$RESET"
+    info "Each step checks first and only changes what is missing, so this is safe to run again."
+
+    step 1 "Tools"
+    tools=(just fzf colima docker minikube kubectl helm testkube gh jq)
+    tools_ok() { for t in "${tools[@]}"; do command -v "$t" || return 1; done; }
+    tools_fix() {
+      command -v brew >/dev/null || die "Homebrew is not installed. Install it from https://brew.sh, then rerun: just setup"
+      run brew bundle --file Brewfile
+    }
+    ensure "Tools installed" tools_ok tools_fix
+
+    step 2 "Docker and minikube"
+    docker_ok() { docker info; }
+    docker_fix() { run colima start --cpu "$COLIMA_CPUS" --memory "$COLIMA_MEMORY_GB"; }
+    ensure "Docker is running" docker_ok docker_fix
+
+    mk_running() { [[ "$(minikube status -o json 2>/dev/null | jq -r '.Host // empty')" == "Running" ]]; }
+    mk_fix() {
+      if minikube profile list -o json 2>/dev/null | jq -e '.valid[]? | select(.Name == "minikube")' >/dev/null; then
+        run minikube start
+      else
+        run minikube start --driver docker --cpus "$MINIKUBE_CPUS" --memory "$MINIKUBE_MEMORY_MB"
+      fi
+    }
+    ensure "minikube is running" mk_running mk_fix
+    read -r cpus mem < <(docker inspect minikube 2>/dev/null | jq -r '.[0].HostConfig | "\(.NanoCpus / 1e9 | floor) \(.Memory / 1048576 | floor)"')
+    (( cpus >= MINIKUBE_CPUS && mem >= MINIKUBE_MEMORY_MB )) \
+      || die "minikube has ${cpus} CPUs / ${mem} MB, needs $MINIKUBE_CPUS / $MINIKUBE_MEMORY_MB. Resize it as in 'Size the cluster' in docs/SETUP.md, then rerun: just setup"
+    ok "minikube has ${cpus} CPUs and ${mem} MB"
+    ctx_ok() { [[ "$(kubectl config current-context)" == "minikube" ]]; }
+    ctx_fix() { run kubectl config use-context minikube; }
+    ensure "kubectl points at minikube" ctx_ok ctx_fix
+
+    step 3 "Logins"
+    gh_ok() { gh auth status -h github.com; }
+    gh_fix() { run gh auth login -h github.com -p https -w; }
+    ensure "GitHub CLI is logged in" gh_ok gh_fix
+    tk_ok() { local c; c=$(testkube get context 2>/dev/null | plain); grep -q "$TK_ORG" <<<"$c" && grep -q "$TK_ENV" <<<"$c"; }
+    tk_fix() { info "A browser window opens to log in to Testkube."; run testkube login --org-id "$TK_ORG" --env-id "$TK_ENV"; }
+    ensure "Testkube CLI is logged in to the demo environment" tk_ok tk_fix
+
+    step 4 "Testkube runner"
+    runner="{{ runner }}"
+    [[ -z "$runner" && -s "$STATE_DIR/runner" ]] && runner=$(cat "$STATE_DIR/runner")
+    if [[ -z "$runner" ]]; then
+      installed=$(kubectl -n testkube get deploy -o name 2>/dev/null | sed -n 's|^deployment.apps/testkube-\(.*\)-testkube-runner$|\1|p' | head -1)
+      suggest=${installed:-$DEFAULT_RUNNER}
+      info "The runner is the Testkube agent in this laptop's minikube that runs the tests."
+      info "Each laptop needs its own. Use $DEFAULT_RUNNER only on the laptop that already has it,"
+      info "or after wiping that laptop. On a second laptop pick a new name, e.g. ${DEFAULT_RUNNER}-2."
+      printf '  Runner name [%s]: ' "$suggest"
+      read -r runner </dev/tty || true
+      runner=${runner:-$suggest}
+    fi
+    [[ "$runner" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "Runner name must be lower-case letters, digits and dashes, got: $runner"
+    export RUNNER=$runner
+    echo "$RUNNER" > "$STATE_DIR/runner"
+    ok "This laptop uses runner $RUNNER (saved in $STATE_DIR/runner)"
+
+    runner_deployed() { [[ "$(kubectl -n testkube get deploy "testkube-$RUNNER-testkube-runner" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" -ge 1 ]]; }
+    runner_connected() { local a; a=$(runner_age "$RUNNER"); [[ -n "$a" && "$a" -lt 120 ]]; }
+    runner_ok() { runner_deployed && runner_connected; }
+    runner_fix() {
+      local age args
+      age=$(runner_age "$RUNNER")
+      if [[ -n "$age" ]]; then
+        if ! runner_deployed && (( age < 120 )); then
+          warn "Runner $RUNNER checked in with Testkube ${age}s ago from somewhere other than this laptop's minikube."
+          info "If two laptops run the same runner, Testkube can send this laptop's tests to the other one."
+          confirm "Install $RUNNER here anyway (only if the other copy is being wiped)" \
+            || die "Pick a name no other laptop uses, then rerun: just setup <runner-name>"
+        fi
+        doing "Runner $RUNNER already exists in Testkube; reconnecting to it instead of creating a new one"
+        args=(testkube install runner "$RUNNER" --namespace testkube)
+      else
+        doing "No runner called $RUNNER in Testkube yet; creating it"
+        args=(testkube install runner "$RUNNER" --create --env "$TK_ENV" --namespace testkube)
+      fi
+      show "${args[*]}"
+      # The CLI prints the runner's secret key in its Helm command; never show it.
+      local out
+      if ! out=$("${args[@]}" 2>&1); then
+        sed -E 's/(runner\.secret=)[^ ]+/\1<hidden>/g' <<<"$out" | plain | tail -20
+        die "Installing runner $RUNNER failed (output above)."
+      fi
+      doing "Waiting for runner $RUNNER to connect to Testkube"
+      for _ in $(seq 1 40); do runner_ok >/dev/null 2>&1 && return 0; sleep 3; done
+    }
+    ensure "Testkube runner $RUNNER is running here and connected" runner_ok runner_fix
+
+    step 5 "Argo CD"
+    argo_ok() { [[ "$(kubectl -n argocd get deploy argocd-server -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" -ge 1 ]]; }
+    argo_fix() {
+      kubectl create namespace argocd --dry-run=client -o yaml | quiet kubectl apply -f -
+      run kubectl apply -n argocd --server-side --force-conflicts -f "https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml" >/dev/null
+      run kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
+    }
+    ensure "Argo CD $ARGOCD_VERSION is running" argo_ok argo_fix
+    nologin_ok() {
+      [[ "$(kubectl -n argocd get cm argocd-cm -o jsonpath='{.data.users\.anonymous\.enabled}')" == "true" ]] &&
+      [[ "$(kubectl -n argocd get cm argocd-rbac-cm -o jsonpath='{.data.policy\.default}')" == "role:admin" ]]
+    }
+    nologin_fix() {
+      warn "Turning off the Argo CD login: fine on a laptop only you use, never on a shared cluster."
+      run kubectl -n argocd patch cm argocd-cm --type merge -p '{"data":{"users.anonymous.enabled":"true"}}'
+      run kubectl -n argocd patch cm argocd-rbac-cm --type merge -p '{"data":{"policy.default":"role:admin"}}'
+      run kubectl -n argocd rollout restart deploy/argocd-server
+      run kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
+    }
+    ensure "Argo CD UI needs no login" nologin_ok nologin_fix
+
+    step 6 "Secrets"
+    gh_secret_ok() { kubectl -n argocd get secret github-token; }
+    gh_secret_fix() {
+      info "Argo CD uses a GitHub token to list the repo's pull requests every 30 seconds."
+      info "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new"
+      info "  Repository access: only $GH_REPO    Permission: Pull requests, Read-only"
+      local tok; tok=$(read_secret "GitHub token (hidden)")
+      show "kubectl -n argocd create secret generic github-token --from-file=token=/dev/stdin"
+      printf '%s' "$tok" | quiet kubectl -n argocd create secret generic github-token --from-file=token=/dev/stdin
+      unset tok
+    }
+    ensure "GitHub token secret exists (for Argo CD)" gh_secret_ok gh_secret_fix
+    tk_secret_ok() { kubectl -n demo-ops get secret testkube-api; }
+    tk_secret_fix() {
+      kubectl create namespace demo-ops --dry-run=client -o yaml | quiet kubectl apply -f -
+      info "The Argo CD test hook uses a Testkube API token to start the tests."
+      info "Create one in the Testkube dashboard under Organization settings > API tokens,"
+      info "with a role that can run workflows in the demo environment."
+      local tok; tok=$(read_secret "Testkube API token (hidden)")
+      show "kubectl -n demo-ops create secret generic testkube-api --from-file=token=/dev/stdin --from-literal=org-id=$TK_ORG --from-literal=env-id=$TK_ENV"
+      printf '%s' "$tok" | quiet kubectl -n demo-ops create secret generic testkube-api \
+        --from-file=token=/dev/stdin --from-literal=org-id="$TK_ORG" --from-literal=env-id="$TK_ENV"
+      unset tok
+    }
+    ensure "Testkube API token secret exists (for the Argo CD test hook)" tk_secret_ok tk_secret_fix
+
+    step 7 "Testkube permissions and workflows"
+    rbac_ok() { kubectl -n testkube get sa demo-app-ephemeral && kubectl get clusterrolebinding demo-app-ephemeral; }
+    rbac_fix() { run kubectl apply -f deploy/testkube/rbac.yaml; }
+    ensure "Permissions for the deploy-and-test workflow are applied" rbac_ok rbac_fix
+    # Created only when missing: the copies in Testkube are the ones the demo runs, and may be newer.
+    wf_ok() {
+      testkube get testworkflowtemplate playwright-e2e -o json &&
+      testkube get testworkflow demo-app-e2e -o json &&
+      testkube get testworkflow demo-app-ephemeral -o json
+    }
+    wf_fix() {
+      testkube get testworkflowtemplate playwright-e2e -o json >/dev/null 2>&1 \
+        || run testkube create testworkflowtemplate -f testkube/playwright-e2e-template.yaml
+      for wf in demo-app-e2e demo-app-ephemeral; do
+        testkube get testworkflow "$wf" -o json >/dev/null 2>&1 || run testkube create testworkflow -f "testkube/$wf.yaml"
+      done
+    }
+    ensure "Testkube template and both workflows exist" wf_ok wf_fix
+
+    step 8 "Argo CD watches pull requests"
+    appset_ok() { [[ "$(appset_runner)" == "$RUNNER" ]] && kubectl -n argocd get applicationset demo-app-pull-requests; }
+    appset_fix() {
+      show "kubectl apply -f deploy/argocd/applicationset.yaml   (with testkubeHook.runner=$RUNNER)"
+      render_appset | quiet kubectl apply -f -
+    }
+    ensure "Argo CD deploys each pull request and tests it on runner $RUNNER" appset_ok appset_fix
+
+    step 9 "Images"
+    images_missing() {
+      local present img; present=$(minikube image ls 2>/dev/null)
+      for img in $IMAGES; do grep -qxF -e "$img" -e "docker.io/$img" <<<"$present" || echo "$img"; done
+    }
+    images_ok() { [[ -z "$(images_missing)" ]]; }
+    images_fix() { local img; for img in $(images_missing); do run minikube image pull "$img"; done; }
+    ensure "All demo images are in minikube" images_ok images_fix
+
+    step 10 "Check everything"
+    echo
+    warn "Argo CD on this laptop deploys every open pull request in $GH_REPO. Run it on one laptop at a time,"
+    info "or two laptops will each deploy (and test) the same pull requests."
+    echo
+    just doctor

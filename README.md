@@ -21,7 +21,8 @@ One small web app and one Playwright test suite, deployed and tested in short-li
 ## Demo commands
 
 ```sh
-brew bundle      # install the tools
+brew install just
+just setup       # set up this laptop (safe to rerun)
 just doctor      # check everything the demo needs
 just             # pick demo steps from a menu
 ```
