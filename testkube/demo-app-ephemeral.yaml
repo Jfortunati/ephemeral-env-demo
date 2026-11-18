@@ -9,6 +9,7 @@ metadata:
   namespace: testkube
   labels:
     app: demo-app
+    base-demo: ephemeral-environments
 spec:
   config:
     imageTag:
